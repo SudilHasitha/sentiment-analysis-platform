@@ -3,7 +3,13 @@ import torch.nn as nn
 from transformers import BertModel
 from torchvision import models as vision_models
 import os
-from meld_dataset import MELDDataset
+try:
+    from .meld_dataset import MELDDataset  # when imported as package
+except ImportError:
+    from meld_dataset import MELDDataset  # fallback when running as script
+from sklearn.metrics import precision_score, accuracy_score
+from torch.utils.tensorboard import SummaryWriter
+from datetime import datetime
 
 class TextEncoder(nn.Module):
     def __init__(self):
@@ -16,7 +22,7 @@ class TextEncoder(nn.Module):
 
         self.projection = nn.Linear(768, 128)
 
-    def forward(self, text_input):
+    def forward(self, input_ids, attention_mask):
         # extract BERT embeddings
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
 
@@ -30,7 +36,7 @@ class TextEncoder(nn.Module):
 class VideoEncoder(nn.Module):
     def __init__(self):
         super().__init__()
-        self.backbone = vision_models.video.r3d_18(pretrained=True)
+        self.backbone = vision_models.video.r3d_18(weights='DEFAULT')
 
         # freeze backbone
         for param in self.backbone.parameters():
@@ -147,6 +153,262 @@ class MultimodalSentimentModel(nn.Module):
         
         return {'emotion': emotion_logits, 'sentiment': sentiment_logits}
 
+class MultiModelTrainer:
+    def __init__(self, model, train_loader, val_loader):
+        self.model = model
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+
+        # print dataset sizes
+        print(f"Training dataset size: {len(train_loader):,}")
+        print(f"Validation dataset size: {len(val_loader):,}")
+        print(f"Batch per epoch: {len(train_loader):,}")
+
+        # tensorboard writer
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_dir = '/opt/ml/output/tensorboard' if 'SM_MODEL_DIR' in os.environ else 'runs'
+        log_dir = os.path.join(base_dir, f'multimodal_sentiment_model_run_{timestamp}')
+        self.writer = SummaryWriter(log_dir=log_dir)
+        self.global_step = 0
+
+        # optimizer and loss function
+        self.optimizer = torch.optim.Adam([
+            {'params': self.model.text_encoder.parameters(), 'lr': 8e-6},
+            {'params': self.model.video_encoder.parameters(), 'lr': 8e-5},
+            {'params': self.model.audio_encoder.parameters(), 'lr': 8e-5},
+            {'params': self.model.fusion_layers.parameters(), 'lr': 5e-4},
+            {'params': self.model.emotion_classifier.parameters(), 'lr': 5e-4},
+            {'params': self.model.sentiment_classifier.parameters(), 'lr': 5e-4},
+        ], weight_decay=1e-5)
+
+        self.current_train_losses = None
+
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer,
+            mode='min',
+            factor=0.1, 
+            patience=2
+        )
+
+        # to avoid overfitting
+        self.emotion_criterion = nn.CrossEntropyLoss(
+            label_smoothing=0.05,
+        )
+
+        # to avoid overfitting
+        self.sentiment_criterion = nn.CrossEntropyLoss(
+            label_smoothing=0.05,
+        )
+
+    def log_metrics(self,loss, metrics, phase="train"):
+        if phase == "train":
+            self.current_train_losses = loss
+        else:
+            self.writer.add_scalar('loss/total/train', 
+                self.current_train_losses['total'],
+                self.global_step
+            )
+            self.writer.add_scalar('loss/total/val', 
+                loss['total'],
+                self.global_step
+            )
+            self.writer.add_scalar('loss/emotion/train', 
+                self.current_train_losses['emotion'],
+                self.global_step
+            )
+            self.writer.add_scalar('loss/emotion/val', 
+                loss['emotion'],
+                self.global_step
+            )
+            self.writer.add_scalar('loss/sentiment/train', 
+                self.current_train_losses['sentiment'],
+                self.global_step
+            )
+            self.writer.add_scalar('loss/sentiment/val', 
+                loss['sentiment'],
+                self.global_step
+            )
+
+        if metrics:
+            self.writer.add_scalar(
+                f'{phase}/emotion_precision',
+                metrics['emotion_precision'],
+                self.global_step
+            )
+            self.writer.add_scalar(
+                f'{phase}/emotion_accuracy',
+                metrics['emotion_accuracy'],
+                self.global_step
+            )
+            self.writer.add_scalar(
+                f'{phase}/sentiment_precision',
+                metrics['sentiment_precision'],
+                self.global_step
+            )
+            self.writer.add_scalar(
+                f'{phase}/sentiment_accuracy',
+                metrics['sentiment_accuracy'],
+                self.global_step
+            )
+    
+    def train_epoch(self):
+        self.model.train()
+        
+        running_loss = {
+            'total': 0.0,
+            'emotion': 0.0,
+            'sentiment': 0.0,
+        }
+
+        for batch in self.train_loader:
+            # getting tensors to same device
+            device = next(self.model.parameters()).device
+            text_input = {
+                'input_ids': batch['text_input']['input_ids'].to(device),
+                'attention_mask': batch['text_input']['attention_mask'].to(device),
+            }
+            video_frames = batch['video_frames'].to(device)
+            audio_features = batch['audio_features'].to(device)
+            emotion_labels = batch['emotion_label'].to(device)
+            sentiment_labels = batch['sentiment_label'].to(device)
+            
+            # zero gradients
+            self.optimizer.zero_grad()
+            
+            # forward pass
+            outputs = self.model(text_input, video_frames, audio_features)
+
+            # calculate loss
+            emotion_logits = outputs['emotion']
+            sentiment_logits = outputs['sentiment']
+            emotion_loss = self.emotion_criterion(emotion_logits, emotion_labels)
+            sentiment_loss = self.sentiment_criterion(sentiment_logits, sentiment_labels)
+            loss = emotion_loss + sentiment_loss
+
+            # backward pass
+            loss.backward()
+
+            # gradient clipping
+            torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(),
+                max_norm=1.0
+            )
+
+            # update optimizer
+            self.optimizer.step()
+
+            # update running loss
+            running_loss['total'] += loss.item()
+            running_loss['emotion'] += emotion_loss.item()
+            running_loss['sentiment'] += sentiment_loss.item()
+
+            # log metrics
+            self.log_metrics(
+                {
+                    'total': loss.item(),
+                    'emotion': emotion_loss.item(),
+                    'sentiment': sentiment_loss.item(),
+                }
+            )
+
+        return {
+            k: v / len(self.train_loader) for k, v in running_loss.items()
+        }
+
+    def evaluate(self, data_loader, phase='val'):
+        self.model.eval()
+
+        # running loss
+        running_loss = {
+            'total': 0.0,
+            'emotion': 0.0,
+            'sentiment': 0.0,
+        }
+
+        # all predictions and labels
+        all_emotion_preds = []
+        all_sentiment_preds = []
+        all_emotion_labels = []
+        all_sentiment_labels = []
+        
+        with torch.inference_mode():
+            for batch in data_loader:
+                device = next(self.model.parameters()).device
+                text_input = {
+                    'input_ids': batch['text_input']['input_ids'].to(device),
+                    'attention_mask': batch['text_input']['attention_mask'].to(device),
+                }
+                video_frames = batch['video_frames'].to(device)
+                audio_features = batch['audio_features'].to(device)
+                emotion_labels = batch['emotion_label'].to(device)
+                sentiment_labels = batch['sentiment_label'].to(device)
+                
+                # forward pass
+                outputs = self.model(text_input, video_frames, audio_features)
+
+                # calculate loss
+                emotion_logits = outputs['emotion']
+                sentiment_logits = outputs['sentiment']
+                emotion_loss = self.emotion_criterion(emotion_logits, emotion_labels)
+                sentiment_loss = self.sentiment_criterion(sentiment_logits, sentiment_labels)
+                loss = emotion_loss + sentiment_loss
+
+                # update running loss
+                running_loss['total'] += loss.item()
+                running_loss['emotion'] += emotion_loss.item()
+                running_loss['sentiment'] += sentiment_loss.item()
+
+                # collect predictions
+                all_emotion_preds.extend(
+                    torch.argmax(emotion_logits, dim=1).cpu().numpy()
+                )
+                all_sentiment_preds.extend(
+                    torch.argmax(sentiment_logits, dim=1).cpu().numpy()
+                )
+                all_emotion_labels.extend(emotion_labels.cpu().numpy())
+                all_sentiment_labels.extend(sentiment_labels.cpu().numpy())
+
+                # update the global step
+                self.global_step += 1
+
+        # calculate average loss
+        average_loss = {
+            k: v / len(data_loader) for k, v in running_loss.items()
+        }
+
+        # calculate accuracy, precision
+        emotion_precision = precision_score(
+            all_emotion_labels, all_emotion_preds, average='weighted')
+        sentiment_precision = precision_score(
+            all_sentiment_labels, all_sentiment_preds, average='weighted')
+        emotion_accuracy = accuracy_score(all_emotion_labels, all_emotion_preds)
+        sentiment_accuracy = accuracy_score(all_sentiment_labels, all_sentiment_preds)
+
+        # log metrics
+        self.log_metrics(
+            average_loss,
+            {
+                'total': average_loss['total'],
+                'emotion': average_loss['emotion'],
+                'sentiment': average_loss['sentiment'],
+            },
+            phase=phase
+        )
+
+        # update scheduler
+        if phase == 'val':
+            self.scheduler.step(average_loss['total'])
+        
+        # return average loss and metrics
+        metrics = {
+            'emotion_precision': emotion_precision,
+            'emotion_accuracy': emotion_accuracy,
+            'sentiment_precision': sentiment_precision,
+            'sentiment_accuracy': sentiment_accuracy,
+        }
+        return average_loss, metrics
+
+    
 if __name__ == "__main__":
     # Get the directory where this script is located
     script_dir = os.path.dirname(os.path.abspath(__file__))

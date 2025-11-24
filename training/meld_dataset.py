@@ -116,7 +116,9 @@ class MELDDataset(Dataset):
 
         # Before permute [frames,height,width,channels]
         # After permute [frames,channels,height,width]
-        return torch.FloatTensor(frames).permute(0, 3, 1, 2)
+        # Convert list to numpy array first to avoid slow tensor creation warning
+        frames_array = np.array(frames)
+        return torch.FloatTensor(frames_array).permute(0, 3, 1, 2)
 
     def _extract_audio_features(self, video_path):
         audio_path = video_path.replace('.mp4', '.wav')
