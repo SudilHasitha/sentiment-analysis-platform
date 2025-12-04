@@ -184,17 +184,17 @@ class MELDDataset(Dataset):
     @classmethod
     def prepare_dataloader(cls, train_csv, train_video_dir,
                            test_csv,test_video_dir,
-                           dev_csv, dev_video_dir, batch_size=32):
+                           val_csv, dev_video_dir, batch_size=32):
         
         train_dataset = MELDDataset(csv_path=train_csv, video_dir=train_video_dir)
         test_dataset = MELDDataset(csv_path=test_csv, video_dir=test_video_dir)
-        dev_dataset = MELDDataset(csv_path=dev_csv, video_dir=dev_video_dir)
+        val_dataset = MELDDataset(csv_path=val_csv, video_dir=val_video_dir)
         
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=cls.collate_fn)
         test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=cls.collate_fn)
-        dev_loader = DataLoader(dev_dataset, batch_size=batch_size, shuffle=False, collate_fn=cls.collate_fn)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=cls.collate_fn)
         
-        return train_loader, test_loader, dev_loader
+        return train_loader, test_loader, val_loader
         
 
 if __name__ == "__main__":
@@ -202,9 +202,9 @@ if __name__ == "__main__":
     script_dir = os.path.dirname(os.path.abspath(__file__))
     # Get the project root (parent of training/)
     project_root = os.path.dirname(script_dir)
-    # Construct absolute paths for dev, test and train datasets
-    dev_csv_path = os.path.join(project_root, 'dataset', 'dev', 'dev_sent_emo.csv')
-    dev_video_dir = os.path.join(project_root, 'dataset', 'dev', 'dev_splits_complete')
+    # Construct absolute paths for val, test and train datasets
+    val_csv_path = os.path.join(project_root, 'dataset', 'val', 'val_sent_emo.csv')
+    val_video_dir = os.path.join(project_root, 'dataset', 'val', 'val_splits_complete')
     test_csv_path = os.path.join(project_root, 'dataset', 'test', 'test_sent_emo.csv')
     test_video_dir = os.path.join(project_root, 'dataset', 'test', 'output_repeated_splits_test')
     train_csv_path = os.path.join(project_root, 'dataset', 'train', 'train_sent_emo.csv')
@@ -212,14 +212,14 @@ if __name__ == "__main__":
     
     # dataset = MELDDataset(csv_path=csv_path, video_dir=video_dir)
     # prepare dataloaders
-    train_loader, test_loader, dev_loader = MELDDataset.prepare_dataloader(train_csv_path, train_video_dir,
+    train_loader, test_loader, val_loader = MELDDataset.prepare_dataloader(train_csv_path, train_video_dir,
                                                                        test_csv_path, test_video_dir,
-                                                                       dev_csv_path, dev_video_dir, batch_size=32)
+                                                                       val_csv_path, val_video_dir, batch_size=32)
 
     print("Dataloaders prepared successfully")
     print("Training loader: ", len(train_loader))
     print("Test loader: ", len(test_loader))
-    print("Dev loader: ", len(dev_loader))
+    print("val loader: ", len(val_loader))
 
     # print first batch one record
     for batch in train_loader:
