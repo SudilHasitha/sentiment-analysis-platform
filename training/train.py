@@ -7,6 +7,8 @@ from meld_dataset import MELDDataset
 from models import MultimodalSentimentModel, MultiModelTrainer
 import torch
 import tqdm
+from install_ffmpeg import install_ffmpeg
+import json
 
 SM_MODEL_DIR = os.environ.get('SM_MODEL_DIR', '.')
 SM_CHANNEL_TRAIN = os.environ.get('SM_CHANNEL_TRAIN', '/opt/ml/input/data/train')
@@ -28,7 +30,12 @@ def parse_args():
     return parser.parse_args()
 
 def main():
-    # install ffmpeg in sagemaker
+    # install ffmpeg in sagemaker if failed to install, exit with error
+    try:
+        install_ffmpeg()
+    except Exception as e:
+        print(f"Failed to install ffmpeg: {e}")
+        raise e
 
     # print available backends
     print(f"Available backends: {torchaudio.get_audio_backend()}")
@@ -91,7 +98,8 @@ def main():
                 {"Name":"validation:sentiment_precision", "Value": val_metrics["sentiment_precision"]},
                 {"Name":"validation:sentiment_accuracy", "Value": val_metrics["sentiment_accuracy"]},
             }
-            }), indent=4))
+        }, indent=4))
+        
         if torch.cuda.is_available():
             print(f"GPU memory allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
             print(f"GPU memory cached: {torch.cuda.memory_cached() / 1024**2:.2f} MB")
@@ -101,6 +109,22 @@ def main():
             best_val_loss = val_loss['total']
             torch.save(model.state_dict(), os.path.join(args.model_dir, 'best_model.pth'))
         
+    # after training, evaluate on test set
+    print("Evaluating on test set...")
+    test_loss, test_metrics = trainer.evaluate(test_loader, phase='test')
+    print(f"Test loss: {test_loss['total']}")
+    print(f"Test metrics: {test_metrics}")
+
+    metrics_data['test_loss'].append(test_loss['total'])
+    print(json.dumps({
+        "metrics":{
+            {"Name": "test:loss", "Value": test_loss['total']},
+            {"Name": "test:emotion_precision", "Value": test_metrics["emotion_precision"]},
+            {"Name": "test:emotion_accuracy", "Value": test_metrics["emotion_accuracy"]},
+            {"Name": "test:sentiment_precision", "Value": test_metrics["sentiment_precision"]},
+            {"Name": "test:sentiment_accuracy", "Value": test_metrics["sentiment_accuracy"]},
+        }
+    }, indent=4))
         
 
 if __name__ == "__main__":
