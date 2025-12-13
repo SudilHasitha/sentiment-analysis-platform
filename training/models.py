@@ -1,3 +1,4 @@
+from torch._tensor import Tensor
 import torch
 import torch.nn as nn
 from transformers import BertModel
@@ -183,6 +184,24 @@ class MultiModelTrainer:
 
         self.current_train_losses = None
 
+        # calculate class weights
+        emotion_weights, sentiment_weights = self.compute_class_weights(self.train_loader)
+
+        # move weights to device
+        device = next(self.model.parameters()).device
+
+        # emotion loss
+        self.emotion_criterion = nn.CrossEntropyLoss(
+            weight=emotion_weights.to(device),
+            label_smoothing=0.05,
+        )
+
+        # sentiment loss
+        self.sentiment_criterion = nn.CrossEntropyLoss(
+            weight=sentiment_weights.to(device),
+            label_smoothing=0.05,
+        )
+
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer,
             mode='min',
@@ -199,6 +218,68 @@ class MultiModelTrainer:
         self.sentiment_criterion = nn.CrossEntropyLoss(
             label_smoothing=0.05,
         )
+
+    # there is an over representation of neutral emotion, so we need to balance the dataset
+    #  additon of weights for each class
+    def compute_class_weights(self, dataset):
+
+        emotion_counts = torch.tensor.zeros(7)
+        sentiment_counts = torch.tensor.zeros(3)
+        skipped = 0
+        total = len(dataset)
+
+        print("Counting class frequencies...")
+        for i in range(total):
+            sample = dataset[i]
+
+            if sample is None:
+                skipped += 1
+                continue
+
+            emotion_label = sample['emotion_label']
+            sentiment_label = sample['sentiment_label']
+            emotion_counts[emotion_label] += 1
+            sentiment_counts[sentiment_label] += 1
+        
+        print(f"Skipped {skipped} samples due to None values")
+        print(f"Total samples: {total}")
+        print(f"Emotion counts: {emotion_counts}")
+
+        valid_counts = total - skipped
+        print("Skipped samples: ",(skipped/total)*100, "%")
+        print("Valid samples: ",(valid_counts/total)*100, "%")
+
+        # class distribution
+        emotions_map = {
+            0: 'anger',
+            1: 'disgust',
+            2: 'fear',
+            3: 'joy',
+            4: 'neutral',
+            5: 'sadness',
+            6: 'surprise',
+        }
+        for i, count in enumerate[Tensor](emotion_counts):
+            print(f"Emotion {emotions_map[i]}: {count.item():.2f}")
+        print("-"*50)
+        sentiment_map = {
+            0: 'negative',
+            1: 'neutral',
+            2: 'positive',
+        }
+        for i, count in enumerate[Tensor](sentiment_counts):
+            print(f"Sentiment {sentiment_map[i]}: {count.item():.2f}")
+        print("-"*50)
+
+        #  calculate class weights
+        emotion_weights = 1.0 / (emotion_counts + 1e-5)
+        sentiment_weights = 1.0 / (sentiment_counts + 1e-5)
+
+        # normalize weights
+        emotion_weights = emotion_weights / emotion_weights.sum()
+        sentiment_weights = sentiment_weights / sentiment_weights.sum()
+
+        return emotion_weights, sentiment_weights
 
     def log_metrics(self,loss, metrics, phase="train"):
         if phase == "train":
@@ -264,8 +345,8 @@ class MultiModelTrainer:
             # getting tensors to same device
             device = next(self.model.parameters()).device
             text_input = {
-                'input_ids': batch['text_input']['input_ids'].to(device),
-                'attention_mask': batch['text_input']['attention_mask'].to(device),
+                'input_ids': batch['text_inputs']['input_ids'].to(device),
+                'attention_mask': batch['text_inputs']['attention_mask'].to(device),
             }
             video_frames = batch['video_frames'].to(device)
             audio_features = batch['audio_features'].to(device)
@@ -335,8 +416,8 @@ class MultiModelTrainer:
             for batch in data_loader:
                 device = next(self.model.parameters()).device
                 text_input = {
-                    'input_ids': batch['text_input']['input_ids'].to(device),
-                    'attention_mask': batch['text_input']['attention_mask'].to(device),
+                    'input_ids': batch['text_inputs']['input_ids'].to(device),
+                    'attention_mask': batch['text_inputs']['attention_mask'].to(device),
                 }
                 video_frames = batch['video_frames'].to(device)
                 audio_features = batch['audio_features'].to(device)
@@ -445,9 +526,9 @@ if __name__ == "__main__":
     }
 
     # map probabilities to emotions and sentiments
-    for i, prob in enumerate(emotion_probs):
+    for i, prob in enumerate[Tensor](emotion_probs):
         print(f"Emotion {emotion_map[i]}: {prob.item():.4f}")
-    for i, prob in enumerate(sentiment_probs):
+    for i, prob in enumerate[Tensor](sentiment_probs):
         print(f"Sentiment {sentiment_map[i]}: {prob.item():.4f}")
 
     

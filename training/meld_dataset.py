@@ -223,7 +223,7 @@ if __name__ == "__main__":
 
     # print first batch one record
     for batch in train_loader:
-        print(batch['text_input'])
+        print(batch['text_inputs'])
         print(batch['video_frames'].shape)
         print(batch['audio_features'].shape)
         print(batch['emotion_label'])

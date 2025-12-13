@@ -6,7 +6,7 @@ import torchaudio
 from meld_dataset import MELDDataset
 from models import MultimodalSentimentModel, MultiModelTrainer
 import torch
-import tqdm
+from tqdm import tqdm
 from install_ffmpeg import install_ffmpeg
 import json
 
@@ -79,7 +79,7 @@ def main():
         'epochs': [],
     }
 
-    for epoch in tqdm.tqdm(range(args.epochs), desc="Epochs"):
+    for epoch in tqdm(range(args.epochs), desc="Epochs"):
         train_loss = trainer.train_epoch()
         metrics_data['train_loss'].append(train_loss)
         metrics_data['epochs'].append(epoch)
