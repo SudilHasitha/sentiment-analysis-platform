@@ -1,6 +1,8 @@
 # load the model
 import os
 import subprocess
+from torch._tensor import Tensor
+from torch._tensor import Tensor
 import cv2
 import torch
 import numpy as np
@@ -10,6 +12,21 @@ import whisper
 from model import MultimodalSentimentModel
 from transformers import AutoTokenizer 
 
+emotion_map = {
+            'anger': 0,
+            'disgust': 1,
+            'fear': 2,
+            'joy': 3,
+            'neutral': 4,
+            'sadness': 5,
+            'surprise': 6
+            }
+
+sentiment_map = {
+            'negative': 0,
+            'neutral': 1,
+            'positive': 2
+            }
 
 class VideoProcessor:
      def load_video_frames(self, video_path):
@@ -180,19 +197,83 @@ def predict_fn(input_data, model_dict):
                 segment['end']
             )
 
-            # video_frames = utterance_processor.load_video_frames
+            video_frames = utterance_processor.video_processor.load_video_frames(segment_path)
+            audio_features = utterance_processor.audio_processor.extract_audio_features(segment_path)
+            text_inputs = tokenizer(
+                segment['text'],
+                padding="max_length",
+                truncation=True,
+                max_length=128,
+                return_tensors="pt"
+            )
+
+            # move to device
+            text_inputs = {k:v.to(device) for k,v in text_inputs.items()}
+            # data struct to expected by the model -> in traing we have the bathc size so do the static model
+            #  [batch_size, channels, height, width]
+            video_frames = video_frames.unsqueeze(0).to(device)
+            audio_features = audio_features.unsqueeze(0).to(device)
+
+            # get predictions 
+            with torch.inference_mode():
+                outputs = model.forward(text_inputs, video_frames, audio_features)
+                emotion_probs = torch.softmax(outputs["emotions"], dim=1)[0]
+                sentiment_probs = torch.softmax(outputs["sentiments"], dim=1)[0]
+
+                emotion_values, emotion_indices = torch.topk(emotion_probs, 3)
+                sentiment_values, sentiment_indices = torch.topk(sentiment_probs, 3)
+
+            # passing predictions
+            predictions.append({
+                "start_time":segment["start"],
+                "end_time": segment["end"],
+                "text":segment["text"],
+                "emotions":[
+                    {"label": emotion_map[idx.item()],
+                    "confidence": conf.item()} \
+                        for idx, conf in zip[tuple[Tensor, Tensor]](emotion_indices,emotion_values)
+                ],
+                "sentiments":[
+                    {"label": sentiment_map[idx.item()],
+                    "confidence": conf.item()} \
+                        for idx, conf in zip[tuple[Tensor, Tensor]](sentiment_indices,sentiment_values)
+                ]
+            })
+
         except Exception as e:
             print(e)
 
+        finally:
+            # Cleanup
+            if os.path.exists(segment_path):
+                os.remove(segment_path)
+    
+    return {"utterances":predictions}
 
 
-def process_local_video(video_path, model_dir="model"):
+
+def process_local_video(video_path, model_dir="deployment/model/"):
     model_dict = load_model(model_dir)
     input_data = {'video_path':video_path}
 
     predictions = predict_fn(input_data, model_dict)
 
+    for utterance in predictions["utterances"]:
+        print("\n Utterance \n")
+        print(f"start: {utterance['start_time']} s End: {utterance['end_time']} s \n")
+        print(f"Text: {utterance["text"]} \n")
+        print(f" Top Emotions and sentiments ")
+        
+        for emotion in utterance['emotions']:
+            print(f"{emotion['label']}: {emotion['confidence']:.2f}")
+
+
+        for sentiment in utterance['sentiments']:
+            print(f"{sentiment['label']}: {sentiment['confidence']:.2f}")
+
+        print("-"*50)
+
 if __name__ == "__main__":
     model = load_model("deployment/model")
-    print(model)
-    process_local_video("./joy.mp4")
+    # print(model)
+    process_local_video("deployment/joy.mp4")
