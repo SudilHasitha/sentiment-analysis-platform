@@ -1,6 +1,8 @@
 # load the model
 import os
 import subprocess
+import tempfile
+import boto3
 from torch._tensor import Tensor
 from torch._tensor import Tensor
 import cv2
@@ -8,6 +10,7 @@ import torch
 import numpy as np
 import torchaudio
 import whisper
+import json
 
 from model import MultimodalSentimentModel
 from transformers import AutoTokenizer 
@@ -28,6 +31,41 @@ sentiment_map = {
             'positive': 2
             }
 
+def install_ffmpeg():
+    print("Installing ffmpeg...")
+    subprocess.run(['python3', '-m', 'pip', 'install', '--upgrade','pip'], check=True)
+    subprocess.run(['python3', '-m', 'pip', 'install', '--upgrade','setuptools'], check=True)
+    try:
+        subprocess.run(['python3', '-m', 'pip', 'install', 'ffmpeg'], check=True)
+        print("FFmpeg installed successfully")
+    except Exception as e:
+        print(f"Error installing ffmpeg: {e} via pip")
+
+    
+    # install ffmpg via static build
+    try:
+        subprocess.run(['wget', 'https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz',
+         '-O', '/tmp/ffmpeg-release-amd64-static.tar.xz'], check=True)
+        subprocess.run(['tar', '-xvf', '/tmp/ffmpeg-release-amd64-static.tar.xz', '-C', '/tmp'], check=True)
+        subprocess.run(['cp', '/tmp/ffmpeg-release-amd64-static/ffmpeg', '/usr/local/bin/ffmpeg'], check=True)
+        # make ffmpeg executable
+        subprocess.run(['chmod', '+x', '/usr/local/bin/ffmpeg'], check=True)
+        # remove temporary files
+        subprocess.run(['rm', '-rf', '/tmp/ffmpeg-release-amd64-static'], check=True)
+        subprocess.run(['rm', '-rf', '/tmp/ffmpeg-release-amd64-static.tar.xz'], check=True)
+        print("FFmpeg installed successfully via static build")
+    except Exception as e:
+        print(f"Error installing ffmpeg: {e} via static build")
+        raise e 
+
+    # verify ffmpeg is installed
+    try:
+        result = subprocess.run(['ffmpeg', '-version'], check=True, capture_output=True, text=True)
+        print(f"FFmpeg version: {result.stdout}")
+    except Exception as e:
+        print(f"Error verifying ffmpeg: {e}")
+        raise e
+    
 class VideoProcessor:
      def load_video_frames(self, video_path):
         cap = cv2.VideoCapture(video_path)
@@ -153,8 +191,32 @@ class VideoUtteranceProcessor:
             raise ValueError(f"Failed to extract segment: {segment_path}")
 
         return segment_path
+    
+def download_from_s3(s3_uri, local_dir="/tmp"):
+    s3_client = boto3.client('s3')
+    bucket = s3_uri.split('/')[2]
+    key = '/'.join(s3_uri.split('/')[3:])
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_file:
+        s3_client.download_file(bucket, key, temp_file.name)
+        return temp_file.name
+        
+# function to handle user requests
+def input_fn(request_body, request_content_type):
+
+    if request_content_type != 'application/json':
+        raise ValueError(f"Unsupported content type: {request_content_type}")
+    
+    input_data = json.loads(request_body)
+    s3_uri = input_data.get('s3_uri', None)
+    local_path = download_from_s3(s3_uri)
+    return {'video_path': local_path}
 
 def load_model(model_path):
+
+    if not install_ffmpeg():
+        raise RuntimeError(" FFmpeg failed to install ")
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = MultimodalSentimentModel().to(device)
     mode_path = os.path.join(model_path, "model.pth")
