@@ -1,0 +1,7 @@
+{
+  "dependencies": {
+    "@hookform/resolvers": "^5.2.2",
+    "bcryptjs": "^3.0.3",
+    "react-hook-form": "^7.69.0"
+  }
+}

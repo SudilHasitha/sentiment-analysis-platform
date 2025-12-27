@@ -37,7 +37,7 @@ def start_training():
         role="arn:aws:iam::067518243038:role/sentiment-analysis-execution-role",
         base_job_name="video-sentiment-pytorch-job",
         
-        instance_type="ml.g5.xlarge",
+        instance_type="ml.m5.large",
         instance_count=1,
         volume_size=30,
         

@@ -31,6 +31,10 @@ sentiment_map = {
             'positive': 2
             }
 
+# Reverse mappings for index to label lookup
+emotion_reverse_map = {v: k for k, v in emotion_map.items()}
+sentiment_reverse_map = {v: k for k, v in sentiment_map.items()}
+
 def install_ffmpeg():
     print("Installing ffmpeg...")
     subprocess.run(['python3', '-m', 'pip', 'install', '--upgrade','pip'], check=True)
@@ -252,6 +256,7 @@ def predict_fn(input_data, model_dict):
     predictions = []
 
     for segment in result['segments']:
+        segment_path = None
         try:
             segment_path = utterance_processor.extract_segments(
                 video_path,
@@ -291,14 +296,14 @@ def predict_fn(input_data, model_dict):
                 "end_time": segment["end"],
                 "text":segment["text"],
                 "emotions":[
-                    {"label": emotion_map[idx.item()],
+                    {"label": emotion_reverse_map[int(idx.item())],
                     "confidence": conf.item()} \
-                        for idx, conf in zip[tuple[Tensor, Tensor]](emotion_indices,emotion_values)
+                        for idx, conf in zip(emotion_indices,emotion_values)
                 ],
                 "sentiments":[
-                    {"label": sentiment_map[idx.item()],
+                    {"label": sentiment_reverse_map[int(idx.item())],
                     "confidence": conf.item()} \
-                        for idx, conf in zip[tuple[Tensor, Tensor]](sentiment_indices,sentiment_values)
+                        for idx, conf in zip(sentiment_indices,sentiment_values)
                 ]
             })
 
@@ -307,7 +312,7 @@ def predict_fn(input_data, model_dict):
 
         finally:
             # Cleanup
-            if os.path.exists(segment_path):
+            if segment_path and os.path.exists(segment_path):
                 os.remove(segment_path)
     
     return {"utterances":predictions}

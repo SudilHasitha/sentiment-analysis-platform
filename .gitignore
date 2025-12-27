@@ -3,3 +3,5 @@ dataset
 .DS_Store
 */__pycache__
 deployment/model/model.pth
+node_modules
+.env
